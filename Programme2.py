@@ -10,15 +10,12 @@ def extraire_valeur(contenu, identificateur):
     return "vide"
 
 def convertir_date_ics(date_ics):
-    # Format input: YYYYMMDDTHHMMSSZ
-    # Format output: DD-MM-YYYY
     annee = date_ics[0:4]
     mois = date_ics[4:6]
     jour = date_ics[6:8]
     return f"{jour}-{mois}-{annee}"
 
 def convertir_heure_ics(heure_ics):
-    # Extrait l'heure du format YYYYMMDDTHHMMSSZ
     heure = heure_ics[9:11]
     minutes = heure_ics[11:13]
     return f"{heure}:{minutes}"
@@ -66,23 +63,16 @@ def extraire_evenements(contenu_ics):
     return evenements
 
 def convertir_evenement_csv(evenement):
-    # Extraction des données
     uid = extraire_valeur(evenement, "UID")
     dtstart = extraire_valeur(evenement, "DTSTART")
     dtend = extraire_valeur(evenement, "DTEND")
     summary = extraire_valeur(evenement, "SUMMARY")
     location = extraire_valeur(evenement, "LOCATION")
     description = extraire_valeur(evenement, "DESCRIPTION")
-
-    # Conversion des dates et calcul de la durée
     date = convertir_date_ics(dtstart)
     heure = convertir_heure_ics(dtstart)
     duree = calculer_duree(dtstart, dtend)
-    
-    # Détermination de la modalité
     modalite = extraire_modalite(summary)
-    
-    # Extraction des groupes et profs depuis la description
     groupes = []
     profs = []
     for ligne in description.split('\n'):
@@ -90,23 +80,19 @@ def convertir_evenement_csv(evenement):
             groupes.append(ligne.strip())
         elif len(ligne.strip()) > 0 and not ligne.startswith('('):
             profs.append(ligne.strip())
-            
-    # Formatage final
+
     groupes_str = "|".join(groupes) if groupes else "vide"
     profs_str = "|".join(profs) if profs else "vide"
     salles_str = location.replace(',', '|')
 
     return f"{uid};{date};{heure};{duree};{modalite};{summary};{salles_str};{profs_str};{groupes_str}"
 
-# Programme principal
 if __name__ == "__main__":
     nom_fichier = "ADE_RT1_Septembre2023_Decembre2023.ics"
     try:
         contenu = lire_fichier_ics(nom_fichier)
         evenements = extraire_evenements(contenu)
         resultats = [convertir_evenement_csv(evt) for evt in evenements]
-        
-        # Affichage des résultats
         for resultat in resultats:
             print(resultat)
             
