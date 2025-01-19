@@ -105,7 +105,7 @@ def generer_html(md_content):
 def main():
     try:
         # 1. Lecture du fichier tcpdump
-        contenu = lire_fichier_tcpdump('capture_reseau.txt')
+        contenu = lire_fichier_tcpdump('fichier1000.txt')
         
         # 2. Extraction des informations
         paquets = [extraire_info_paquet(ligne) for ligne in contenu]
