@@ -52,20 +52,61 @@ class AnalyseurReseau:
         self.frame_graphiques = ttk.Frame(frame_principale)
         self.frame_graphiques.grid(row=0, column=1, padx=5, sticky=(tk.N, tk.S, tk.W, tk.E))
         frame_principale.grid_columnconfigure(1, weight=3)
-        
-    def charger_fichier(self):
-        fichier = filedialog.askopenfilename(
-            filetypes=[("Fichiers texte", "*.txt"), ("Fichiers log", "*.log"), ("Tous les fichiers", "*.*")]
-        )
-        if fichier:
-            try:
-                with open(fichier, 'r') as f:
-                    self.donnees_dump = f.readlines()
-                self.texte_resultats.delete(1.0, tk.END)
-                self.texte_resultats.insert(tk.END, f"Fichier chargé : {fichier}\n")
-            except Exception as e:
-                messagebox.showerror("Erreur", f"Erreur lors de la lecture du fichier : {str(e)}")
 
+    def parser_ligne_dump(self, ligne):
+        """
+        Parse une ligne du fichier dump et extrait les informations pertinentes
+        """
+        packet_info = {
+            'timestamp': None,
+            'ip': None,
+            'length': 0,
+            'flags': None
+        }
+        
+        # Extraire le timestamp
+        timestamp_match = re.search(r'(\d{2}):(\d{2}):(\d{2}\.\d+)', ligne)
+        if timestamp_match:
+            packet_info['timestamp'] = timestamp_match.group(0)
+            
+        # Extraire l'adresse IP
+        ip_match = re.search(r'IP\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', ligne)
+        if ip_match:
+            packet_info['ip'] = ip_match.group(1)
+            
+        # Extraire la longueur
+        length_match = re.search(r'length\s+(\d+)', ligne)
+        if length_match:
+            packet_info['length'] = int(length_match.group(1))
+            
+        # Extraire les flags TCP
+        flags_match = re.search(r'Flags\s+\[([^\]]+)\]', ligne)
+        if flags_match:
+            packet_info['flags'] = flags_match.group(1)
+            
+        return packet_info
+
+    def analyser_flags_tcp(self, flags):
+        """
+        Analyse les flags TCP et retourne la catégorie appropriée
+        """
+        if not flags:
+            return 'Autres'
+            
+        # Convertir les flags en majuscules mais conserver les points
+        flags = flags.upper()
+        
+        if 'S' in flags and '.' not in flags:
+            return 'SYN'
+        elif '.' in flags and 'P' in flags:
+            return 'PUSH-ACK'
+        elif 'S' in flags and '.' in flags:
+            return 'SYN-ACK'
+        elif '.' in flags:
+            return 'ACK'
+            
+        return 'Autres'
+        
     def analyser_donnees(self):
         if not self.donnees_dump:
             messagebox.showwarning("Attention", "Veuillez d'abord charger un fichier")
@@ -75,90 +116,38 @@ class AnalyseurReseau:
             'connexions': [],
             'tailles_paquets': [],
             'distribution_horaire': [0] * 24,
-            'types_attaques': {
-                'Scan SYN': 0,
-                'Connexion SSH Établie': 0,
-                'Tentative de Reset': 0,
-                'Scan FIN': 0,
-                'Scan complet': 0,
-                'Autre': 0
-            },
-            'flags_stats': {}
+            'flags_stats': {
+                'SYN': 0,
+                'ACK': 0,
+                'PUSH-ACK': 0,
+                'SYN-ACK': 0,
+                'Autres': 0
+            }
         }
         
         for ligne in self.donnees_dump:
-            if 'IP' in ligne and '.ssh' in ligne:
-                # Extraction des informations avec regex
-                timestamp = re.search(r'(\d{2}):(\d{2}):(\d{2}\.\d{6})', ligne)
-                ip = re.search(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})', ligne)
-                longueur = re.search(r'length (\d+)', ligne)
-                flags = re.search(r'Flags \[(.*?)\]', ligne)
+            packet_info = self.parser_ligne_dump(ligne)
+            
+            if packet_info['ip']:  # Si la ligne contient des informations valides
+                # Ajouter la connexion
+                self.donnees_analysees['connexions'].append(packet_info)
                 
-                if timestamp and ip:
-                    heure = int(timestamp.group(1))
+                # Traiter la taille du paquet
+                if packet_info['length'] > 0:
+                    self.donnees_analysees['tailles_paquets'].append(packet_info['length'])
+                
+                # Traiter l'heure
+                if packet_info['timestamp']:
+                    heure = int(packet_info['timestamp'].split(':')[0])
                     self.donnees_analysees['distribution_horaire'][heure] += 1
-                    
-                    # Création de l'enregistrement de connexion
-                    connexion = {
-                        'timestamp': f"{timestamp.group(1)}:{timestamp.group(2)}:{timestamp.group(3)}",
-                        'ip': ip.group(1),
-                        'taille': int(longueur.group(1)) if longueur else 0,
-                        'flags': flags.group(1) if flags else ''
-                    }
-                    
-                    self.donnees_analysees['connexions'].append(connexion)
-                    
-                    # Suivi des tailles de paquets
-                    if connexion['taille'] > 0:
-                        self.donnees_analysees['tailles_paquets'].append(connexion['taille'])
-                    
-                    # Analyse des flags
-                    if flags:
-                        flag_sequence = flags.group(1)
-                        self.donnees_analysees['flags_stats'][flag_sequence] = self.donnees_analysees['flags_stats'].get(flag_sequence, 0) + 1
-                        
-                        # Classification basée sur les flags TCP
-                        if 'S' in flag_sequence and not ('A' in flag_sequence):
-                            self.donnees_analysees['types_attaques']['Scan SYN'] += 1
-                        elif 'S' in flag_sequence and 'A' in flag_sequence:
-                            self.donnees_analysees['types_attaques']['Connexion SSH Établie'] += 1
-                        elif 'R' in flag_sequence:
-                            self.donnees_analysees['types_attaques']['Tentative de Reset'] += 1
-                        elif 'F' in flag_sequence and not ('A' in flag_sequence):
-                            self.donnees_analysees['types_attaques']['Scan FIN'] += 1
-                        elif 'S' in flag_sequence and 'F' in flag_sequence and 'P' in flag_sequence:
-                            self.donnees_analysees['types_attaques']['Scan complet'] += 1
-                        else:
-                            self.donnees_analysees['types_attaques']['Autre'] += 1
+                
+                # Analyser les flags TCP
+                if packet_info['flags']:
+                    flag_type = self.analyser_flags_tcp(packet_info['flags'])
+                    self.donnees_analysees['flags_stats'][flag_type] += 1
         
         self.afficher_analyse()
         self.afficher_graphiques()
-        
-    def afficher_analyse(self):
-        self.texte_resultats.delete(1.0, tk.END)
-        
-        # Affichage des statistiques générales
-        total_connexions = len(self.donnees_analysees['connexions'])
-        self.texte_resultats.insert(tk.END, f"=== Résultats de l'Analyse Réseau ===\n\n")
-        self.texte_resultats.insert(tk.END, f"Connexions Totales : {total_connexions}\n\n")
-        
-        # Statistiques des paquets
-        if self.donnees_analysees['tailles_paquets']:
-            taille_moy = sum(self.donnees_analysees['tailles_paquets']) / len(self.donnees_analysees['tailles_paquets'])
-            taille_max = max(self.donnees_analysees['tailles_paquets'])
-            taille_min = min(self.donnees_analysees['tailles_paquets'])
-            
-            self.texte_resultats.insert(tk.END, "Statistiques des Paquets :\n")
-            self.texte_resultats.insert(tk.END, f"- Taille Moyenne : {taille_moy:.2f} octets\n")
-            self.texte_resultats.insert(tk.END, f"- Taille Maximum : {taille_max} octets\n")
-            self.texte_resultats.insert(tk.END, f"- Taille Minimum : {taille_min} octets\n\n")
-        
-        # Statistiques des types d'attaques
-        self.texte_resultats.insert(tk.END, "Types d'Attaques :\n")
-        for type_attaque, compte in self.donnees_analysees['types_attaques'].items():
-            if compte > 0:
-                pourcentage = (compte / total_connexions) * 100
-                self.texte_resultats.insert(tk.END, f"- {type_attaque}: {compte} ({pourcentage:.1f}%)\n")
 
     def afficher_graphiques(self):
         # Nettoyage des graphiques précédents
@@ -173,19 +162,27 @@ class AnalyseurReseau:
         if self.donnees_analysees.get('flags_stats'):
             labels = []
             sizes = []
-            colors = ['#2ecc71', '#e67e22', '#3498db', '#2980b9', '#95a5a6']
+            colors = {
+                'SYN': '#2ecc71',      # Vert
+                'ACK': '#e67e22',      # Orange
+                'PUSH-ACK': '#3498db', # Bleu
+                'SYN-ACK': '#9b59b6',  # Violet
+                'Autres': '#95a5a6'    # Gris
+            }
             
+            # Calculer le total pour les pourcentages
             total_flags = sum(self.donnees_analysees['flags_stats'].values())
             
+            # Préparer les données pour le camembert
             for flag_type, count in self.donnees_analysees['flags_stats'].items():
                 if count > 0:
                     labels.append(flag_type)
                     sizes.append(count)
-            
-            if sizes:  # Vérifier qu'il y a des données à afficher
+                    
+            if sizes:
                 wedges, texts, autotexts = ax1.pie(sizes,
                                                   labels=labels,
-                                                  colors=colors[:len(sizes)],
+                                                  colors=[colors[label] for label in labels],
                                                   autopct='%1.1f%%',
                                                   startangle=90)
                 plt.setp(autotexts, size=8)
@@ -203,10 +200,6 @@ class AnalyseurReseau:
         ax2.grid(True, linestyle='--', alpha=0.7)
         ax2.set_xlim(-1, 24)
         
-        # Ajout d'une grille
-        ax2.yaxis.grid(True, linestyle='--', alpha=0.7)
-        ax2.set_axisbelow(True)  # Mettre la grille en arrière-plan
-        
         # Distribution des Tailles de Paquets (à droite)
         ax3 = fig.add_subplot(133)
         if self.donnees_analysees['tailles_paquets']:
@@ -221,15 +214,23 @@ class AnalyseurReseau:
             ax3.grid(True, linestyle='--', alpha=0.7)
             ax3.set_axisbelow(True)
         
-        # Ajuster les espaces entre les graphiques
         fig.tight_layout()
-        
-        # Création du canvas et affichage
         canvas = FigureCanvasTkAgg(fig, self.frame_graphiques)
         canvas.draw()
-        
-        # Utiliser pack au lieu de grid pour une meilleure gestion de l'espace
         canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+    def charger_fichier(self):
+        fichier = filedialog.askopenfilename(
+            filetypes=[("Fichiers texte", "*.txt"), ("Fichiers log", "*.log"), ("Tous les fichiers", "*.*")]
+        )
+        if fichier:
+            try:
+                with open(fichier, 'r') as f:
+                    self.donnees_dump = f.readlines()
+                self.texte_resultats.delete(1.0, tk.END)
+                self.texte_resultats.insert(tk.END, f"Fichier chargé : {fichier}\n")
+            except Exception as e:
+                messagebox.showerror("Erreur", f"Erreur lors de la lecture du fichier : {str(e)}")
 
     def exporter_csv(self):
         if not self.donnees_analysees:
@@ -244,7 +245,7 @@ class AnalyseurReseau:
         if fichier:
             with open(fichier, 'w', newline='') as csvfile:
                 writer = csv.DictWriter(csvfile, 
-                    fieldnames=['timestamp', 'ip', 'taille'])
+                    fieldnames=['timestamp', 'ip', 'length', 'flags'])
                 writer.writeheader()
                 writer.writerows(self.donnees_analysees['connexions'])
             messagebox.showinfo("Succès", "Données exportées avec succès")
@@ -270,21 +271,64 @@ class AnalyseurReseau:
                 <style>
                     body {{ font-family: Arial, sans-serif; margin: 40px; }}
                     h1 {{ color: #2c3e50; }}
+                    h2 {{ color: #34495e; margin-top: 30px; }}
                     .stats {{ margin: 20px 0; }}
+                    .distribution {{ margin: 20px 0; }}
+                    table {{ border-collapse: collapse; width: 100%; margin: 20px 0; }}
+                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                    th {{ background-color: #f5f6fa; }}
+                    .flag-stats {{ display: flex; flex-wrap: wrap; gap: 20px; }}
+                    .flag-item {{ 
+                        background: #f8f9fa;
+                        padding: 15px;
+                        border-radius: 5px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
                 </style>
             </head>
             <body>
                 <h1>Rapport d'Analyse Réseau</h1>
                 <div class="stats">
                     <h2>Statistiques Générales</h2>
-                    <p>Connexions Totales : {total_connexions}</p>
-                    <p>Taille Moyenne des Paquets : {taille_moy:.2f} octets</p>
+                    <table>
+                        <tr>
+                            <td><strong>Connexions Totales</strong></td>
+                            <td>{total_connexions}</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Taille Moyenne des Paquets</strong></td>
+                            <td>{taille_moy:.2f} octets</td>
+                        </tr>
+                    </table>
                     
-                    <h2>Distribution des Attaques</h2>
-                    <ul>
-                    {"".join(f"<li>{type_}: {compte} ({(compte/total_connexions)*100:.1f}%)</li>" 
-                             for type_, compte in self.donnees_analysees['types_attaques'].items() if compte > 0)}
-                    </ul>
+                    <h2>Distribution des Flags TCP</h2>
+                    <div class="flag-stats">
+                        {"".join(f'<div class="flag-item"><h3>{flag_type}</h3><p>{compte} paquets</p><p>{(compte/total_connexions)*100:.1f}%</p></div>' 
+                                 for flag_type, compte in self.donnees_analysees['flags_stats'].items() if compte > 0)}
+                    </div>
+                    
+                    <h2>Détails des Paquets</h2>
+                    <table>
+                        <tr>
+                            <th>Type</th>
+                            <th>Nombre</th>
+                            <th>Pourcentage</th>
+                        </tr>
+                        {"".join(f'<tr><td>{flag_type}</td><td>{compte}</td><td>{(compte/total_connexions)*100:.1f}%</td></tr>' 
+                                 for flag_type, compte in self.donnees_analysees['flags_stats'].items() if compte > 0)}
+                    </table>
+                </div>
+                
+                <div class="distribution">
+                    <h2>Distribution Horaire</h2>
+                    <table>
+                        <tr>
+                            <th>Heure</th>
+                            <th>Nombre de Connexions</th>
+                        </tr>
+                        {"".join(f'<tr><td>{heure:02d}h</td><td>{count}</td></tr>' 
+                                 for heure, count in enumerate(self.donnees_analysees['distribution_horaire']) if count > 0)}
+                    </table>
                 </div>
             </body>
             </html>
@@ -294,7 +338,82 @@ class AnalyseurReseau:
                 f.write(contenu_html)
             webbrowser.open('file://' + os.path.realpath(fichier))
 
+    def afficher_analyse(self):
+        """Affiche les résultats de l'analyse dans la zone de texte"""
+        self.texte_resultats.delete(1.0, tk.END)
+        
+        # En-tête
+        self.texte_resultats.insert(tk.END, "=== Résultats de l'Analyse Réseau ===\n\n")
+        
+        # Statistiques générales
+        total_connexions = len(self.donnees_analysees['connexions'])
+        self.texte_resultats.insert(tk.END, f"Connexions Totales : {total_connexions}\n\n")
+        
+        # Statistiques des paquets
+        if self.donnees_analysees['tailles_paquets']:
+            taille_moy = sum(self.donnees_analysees['tailles_paquets']) / len(self.donnees_analysees['tailles_paquets'])
+            taille_max = max(self.donnees_analysees['tailles_paquets'])
+            taille_min = min(self.donnees_analysees['tailles_paquets'])
+            
+            self.texte_resultats.insert(tk.END, "Statistiques des Paquets :\n")
+            self.texte_resultats.insert(tk.END, f"- Taille Moyenne : {taille_moy:.2f} octets\n")
+            self.texte_resultats.insert(tk.END, f"- Taille Maximum : {taille_max} octets\n")
+            self.texte_resultats.insert(tk.END, f"- Taille Minimum : {taille_min} octets\n\n")
+        
+        # Distribution des flags TCP
+        self.texte_resultats.insert(tk.END, "Distribution des Flags TCP :\n")
+        for flag_type, compte in self.donnees_analysees['flags_stats'].items():
+            if compte > 0:
+                pourcentage = (compte / total_connexions) * 100
+                self.texte_resultats.insert(tk.END, f"- {flag_type}: {compte} ({pourcentage:.1f}%)\n")
+        
+        self.texte_resultats.see(1.0)  # Scroll to top
+
+    def _setup_styles(self):
+        """Configure les styles de l'interface"""
+        style = ttk.Style()
+        
+        # Configuration générale
+        style.configure(".", font=('Helvetica', 10))
+        
+        # Style des boutons
+        style.configure("TButton", padding=6, relief="flat", background="#2980b9")
+        
+        # Style des frames
+        style.configure("TFrame", background="#f5f6fa")
+        
+        # Style des labels
+        style.configure("TLabel", padding=6, background="#f5f6fa")
+
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = AnalyseurReseau(root)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        root.title("Analyseur de Trafic Réseau")
+        
+        # Définir l'icône si disponible
+        try:
+            root.iconbitmap("icon.ico")
+        except:
+            pass
+            
+        # Configurer le style de la fenêtre
+        root.configure(bg='#f5f6fa')
+        
+        # Créer et lancer l'application
+        app = AnalyseurReseau(root)
+        
+        # Centrer la fenêtre
+        window_width = 1400
+        window_height = 800
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        center_x = int(screen_width/2 - window_width/2)
+        center_y = int(screen_height/2 - window_height/2)
+        root.geometry(f'{window_width}x{window_height}+{center_x}+{center_y}')
+        
+        # Lancer la boucle principale
+        root.mainloop()
+        
+    except Exception as e:
+        messagebox.showerror("Erreur", f"Une erreur est survenue lors du lancement de l'application : {str(e)}")
+        raise
